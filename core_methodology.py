@@ -1,6 +1,7 @@
 import numpy as np
 import math
 import gurobipy as grb
+from scipy.stats import norm
 
 delta_T = 1 / 360
 
@@ -28,6 +29,7 @@ portfolio = [
 ]
 """
 
+
 # основной класс
 class CORE:
 
@@ -37,6 +39,8 @@ class CORE:
         self._quantities = np.array([asset['quantity'] for asset in self._portfolio]).reshape(len(self._portfolio), 1)
         self._ds = np.array([asset['ds'] for asset in self._portfolio]).reshape(len(self._portfolio), 1)
         self._abs_quantities = np.abs(self._quantities)
+
+        self.validate_portfolio()  # заполняем пропущенные параметры в активе портфеля
 
         if price_paths is not None:
             self._price_paths = price_paths
@@ -51,11 +55,10 @@ class CORE:
         else:
             self._T = self.get_liquidation_period()
 
-        self.validate_portfolio()
-
         self._strategy = None
         self._pl_matrix = None
         self._c_value = None
+        self._argmin_scenario = None
 
     def get_liquidation_period(self):
         check = [asset['execution_lag'] + math.ceil(abs(asset['quantity']) / asset['daily_limit'])
@@ -157,6 +160,7 @@ class CORE:
         transient_loss = np.minimum(0, mid - permanent_loss)
 
         self._c_value = -np.min(transient_loss + permanent_loss)
+        self._argmin_scenario = np.argmin(transient_loss + permanent_loss)
 
     def get_strategy(self):
         return self._strategy
@@ -166,6 +170,9 @@ class CORE:
 
     def get_c_value(self):
         return self._c_value
+
+    def get_argmin_scenario(self):
+        return self._argmin_scenario
 
     def naive_strategy(self):
         set_T = range(self._T)
@@ -197,7 +204,7 @@ class CORE:
     def validate_portfolio(self):
         for asset in self._portfolio:
             if 'days_to_maturity' not in asset.keys():
-                asset['days_to_maturity'] = self._T + 5
+                asset['days_to_maturity'] = 10000
 
             if 'execution_lag' not in asset.keys():
                 asset['execution_lag'] = 1
@@ -206,4 +213,31 @@ class CORE:
                 asset['daily_limit'] = 10000
 
 
+def forward_contract_value(F0, K, r, T):
+    return (F0 - K) * np.exp(-r * T)
 
+
+def future_price(S0, r, q, T):
+    return S0 * np.exp((r - q) * T)
+
+
+def option_stock(S0, K, r, sigma, T, param="call"):
+    d1 = (np.log(S0 / K) + (r + sigma ** 2 / 2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+
+    if param.lower() == "call":
+        return S0 * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+
+    elif param.lower() == "put":
+        return K * np.exp(-r * T) * norm.cdf(-d2) - S0 * norm.cdf(-d1)
+
+
+def option_future(F0, K, r, sigma, T, param="call"):
+    d1 = (np.log(F0 / K) + sigma ** 2 / 2 * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+
+    if param.lower() == "call":
+        return np.exp(-r * T) * (F0 * norm.cdf(d1) - K * norm.cdf(d2))
+
+    elif param.lower() == "put":
+        return np.exp(-r * T) * (K * norm.cdf(-d2) - F0 * norm.cdf(-d1))
